@@ -1,6 +1,10 @@
+import os
+import sys
+import subprocess
 from typing import List
 from functools import lru_cache
 
+from mpi4py import MPI
 import numpy as np
 import torch
 
@@ -23,100 +27,68 @@ def rank_transformation(fitness_scores):
     values = center_function(population_size)
     return values[ranks]
 
-import gym
-import collections
-class Bipedal():
-    """This class will be passed to the ES algorithm.
-    It should implement a forward function which
-    returns either reward, behaviour characteristics
-    or both depending on the chosen ES algorithm."""
-    def __init__(self):
-        self.env = gym.make('BipedalWalker-v3')
-
-        # FIX
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # Behaviour characteristic is domain dependent function,
-        # in BipedalWalker, I've decided to make it first
-        # 32 actions and last 32 actions. In my tests,
-        # with random actions, the shortest simulation was
-        # 39 actions so I think 32 is a safe number.
-        self.n = 32
-
-    def forward(self, policy):
-        done = False
-        observation = self.env.reset()
-        step = 0
-        total_reward = 0
-        start_actions = []
-        last_actions = collections.deque(maxlen=self.n)
-        with torch.no_grad():
-            while not done:
-                observation = (torch.from_numpy(observation)
-                               .float()
-                               .to(self.device))
-                action = (policy(observation)
-                        .data
-                        .detach()
-                        .cpu()
-                        .numpy())
-                observation, reward, done, info = self.env.step(action)
-                total_reward += reward
-                last_actions.append(action)
-                if step < self.n:
-                    start_actions.append(action)
-                step+=1
-        bc = np.concatenate([start_actions, last_actions]).flatten()
-        return total_reward, bc
-
-class CartPole():
-    def __init__(self):
-        self.env = gym.make('CartPole-v1')
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    def forward(self, policy):
-        done = False
-        observation = self.env.reset()
-        total_reward = 0
-        with torch.no_grad():
-            while not done:
-                observation = (torch.from_numpy(observation)
-                               .float()
-                               .to(self.device))
-                action = policy(observation).max(0)[1].item()
-                observation, reward, done, info = self.env.step(action)
-                total_reward += reward
-        return total_reward, None
+def fork(n_proc, hwthread=False):
+    if os.getenv('MPI_PARENT') is None:
+        import inspect
+        # Is this viable
+        frame = inspect.stack()[2]
+        module = inspect.getmodule(frame[0])
+        env = os.environ.copy()
+        env['MPI_PARENT'] = '1'
+        print(['mpirun', '-use-hwthread-cpus' if hwthread else '', '-np',
+               str(n_proc), sys.executable, '-u', __file__])
+        # FIX no hwthread
+        subprocess.call(['mpirun', '-use-hwthread-cpus' if hwthread else '', '-np',
+            str(n_proc), sys.executable, '-u', os.path.abspath(module.__file__)],
+                        env=env)
+        return True
+    return False
 
 class ES():
     def __init__(self, policy, agent, optimizer, population_size, sigma=0.01,
                  policy_kwargs={}, agent_kwargs={}, optimizer_kwargs={}):
-        self.policy = policy(**policy_kwargs)
+
+        self.comm = MPI.COMM_WORLD
+        self.rank = self.comm.Get_rank()
+        self.n_workers = self.comm.Get_size() 
+
+        if self.rank == 0:
+            self.policy = policy(**policy_kwargs)
+            self.optimizer = optimizer(self.policy.parameters(), **optimizer_kwargs)
+            self.sigma = sigma
+
         self.target = policy(**policy_kwargs)
         self.agent = agent(**agent_kwargs)
-        self.optimizer = optimizer(self.policy.parameters(), **optimizer_kwargs)
-        self.sigma = sigma
         self.population_size = population_size
 
-        # FIX
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    def train(self):
-        import time
-        while True:
+    def master(self):
+        step = 0
+        while step < self.n_steps:
             parameters = torch.nn.utils.parameters_to_vector(self.policy.parameters())
             normal = torch.distributions.normal.Normal(0, self.sigma)
             epsilon = normal.sample([self.population_size, parameters.shape[0]])
             parameters = parameters + epsilon
-            rewards = []
-            prev_time = time.time()
-            for parameter in parameters:
-                torch.nn.utils.vector_to_parameters(parameter, self.target.parameters())
+            n_parameters_per_worker = int(self.population_size/self.n_workers)
+            parameters = torch.split(parameters, n_parameters_per_worker)
+            for i in range(1, self.n_workers):
+                self.comm.send(parameters[i], dest=i)
+
+            rewards = np.empty(self.population_size)
+            for idx, parameter in enumerate(parameters[0]):
+                torch.nn.utils.vector_to_parameters(
+                    parameter, self.target.parameters())
                 reward, _ = self.agent.forward(self.target)
-                rewards.append(reward)
+                rewards[idx] = reward
+
+            for worker_idx in range(1, self.n_workers):
+                self.comm.Recv(rewards[worker_idx*n_parameters_per_worker:
+                                       worker_idx*n_parameters_per_worker+
+                                       n_parameters_per_worker],
+                               source=worker_idx)
+
             ranked_rewards = torch.from_numpy(
                 rank_transformation(rewards)
-            ).unsqueeze(0).float().to(self.device)
+            ).unsqueeze(0).float()
             grad = (torch.mm(ranked_rewards, epsilon) /
                     (self.population_size * self.sigma)).squeeze()
             index = 0
@@ -126,8 +98,31 @@ class ES():
                 parameter.grad.data.clamp_(-1.0, 1.0)
                 index += size
             self.optimizer.step()
+            step += 1
             print(np.max(rewards))
-            print(time.time() - prev_time)
+
+    def slave(self):
+        step = 0
+        while step < self.n_steps:
+            parameters = torch.zeros((int(self.population_size/self.n_workers),
+                                      self.n_parameters))
+            rewards = []
+            parameters = self.comm.recv(source=0)
+            for parameter in parameters:
+                torch.nn.utils.vector_to_parameters(
+                    parameter, self.target.parameters())
+                reward, _ = self.agent.forward(self.target)
+                rewards.append(reward)
+            self.comm.Send(np.array(rewards), dest=0)
+            step += 1
+
+    def train(self, n_steps, n_proc, hwthread=False):
+        assert not (self.population_size % n_proc)
+        self.n_steps = n_steps
+        if fork(n_proc, hwthread): sys.exit(0)
+        parameters = torch.nn.utils.parameters_to_vector(self.target.parameters())
+        self.n_parameters = parameters.shape[0]
+        self.master() if self.rank == 0 else self.slave()
 
 class NS_ES():
     pass
@@ -138,60 +133,3 @@ class NSR_ES():
 class NSRA_ES():
     pass
 
-class Policy(torch.nn.Module):
-    def __init__(self):
-        env = gym.make('BipedalWalker-v3')
-        super(Policy, self).__init__()
-        self.linear_1 = torch.nn.Linear(env.observation_space.shape[0], 64)
-        self.activation_1 = torch.nn.ReLU()
-        self.linear_2 = torch.nn.Linear(64, 64)
-        self.activation_2 = torch.nn.ReLU()
-        self.linear_3 = torch.nn.Linear(64, env.action_space.shape[0])
-
-    def forward(self, x):
-        l1 = self.linear_1(x)
-        a1 = self.activation_1(l1)
-        l2 = self.linear_2(a1)
-        a2 = self.activation_2(l2)
-        l3 = self.linear_3(a2)
-        return l3
-
-class CartPolePolicy(torch.nn.Module):
-    def __init__(self):
-        env = gym.make('CartPole-v1')
-        super(CartPolePolicy, self).__init__()
-        self.linear_1 = torch.nn.Linear(env.observation_space.shape[0], 64)
-        self.activation_1 = torch.nn.ReLU()
-        self.linear_2 = torch.nn.Linear(64, 64)
-        self.activation_2 = torch.nn.ReLU()
-        self.linear_3 = torch.nn.Linear(64, env.action_space.n)
-
-    def forward(self, x):
-        l1 = self.linear_1(x)
-        a1 = self.activation_1(l1)
-        l2 = self.linear_2(a1)
-        a2 = self.activation_2(l2)
-        l3 = self.linear_3(a2)
-        return l3
-
-# bipedal = Bipedal()
-# policy = Policy()
-# reward, bc = bipedal.forward(policy)
-# print(reward)
-es = ES(CartPolePolicy, CartPole, torch.optim.Adam, 100)
-# es = ES(Policy, Bipedal, torch.optim.Adam, 256)
-es.train()
-
-
-# a = torch.Tensor([1, 2, 3])
-# print(a.data.detach().cpu().numpy())
-# # Converting weights to an array
-# ## One solution
-# print(torch.cat([param.view(-1) for param in policy.parameters()]))
-# 
-# ## Another Solution
-# print(torch.nn.utils.parameters_to_vector(policy.parameters()))
-# 
-# ## Going back
-# parameters = torch.nn.utils.parameters_to_vector(policy.parameters())
-# torch.nn.utils.vector_to_parameters(parameters, policy.parameters())
