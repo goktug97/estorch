@@ -41,7 +41,7 @@ def fork(n_proc=1, hwthread=False, hostfile=None):
             command = f"mpirun --hostfile {hostfile}"
             command = f"{command} {sys.executable} -u {os.path.abspath(module.__file__)}"
         else:
-            command = f"mpirun{' -use-hwthread-cpus ' if hwthread else ' '}-np {n_proc}"
+            command = f"mpirun{' --bind-to hwthread ' if hwthread else ' '}-np {n_proc}"
             command = f'{command} {sys.executable} -u {os.path.abspath(module.__file__)}'
         subprocess.call(command.split(' '), env=env)
         return True
@@ -49,7 +49,7 @@ def fork(n_proc=1, hwthread=False, hostfile=None):
 
 class ES():
     def __init__(self, policy, agent, optimizer, population_size, sigma=0.01,
-                 device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                 device=torch.device("cpu"),
                  policy_kwargs={}, agent_kwargs={}, optimizer_kwargs={}):
 
         self._comm = MPI.COMM_WORLD
@@ -80,7 +80,7 @@ class ES():
 
     def log(self):
         """log function is called after every optimization step."""
-        print(f'Step: {self.step} Episode Reward: {self.episode_reward}')
+        print(f'Step: {self.step} Episode Reward: {self.episode_reward} Max Population Reward: {np.max(self.population_rewards)}')
 
     def _master(self):
         self.step = 0
@@ -90,7 +90,7 @@ class ES():
                     self.policy.parameters())
                 normal = torch.distributions.normal.Normal(0, self.sigma)
                 epsilon = normal.sample([self.population_size, parameters.shape[0]])
-                self.population_parameters = parameters + epsilon
+                self.population_parameters = parameters.detach().cpu() + epsilon
                 n_parameters_per_worker = int(self.population_size/self.n_workers)
                 split_parameters = torch.split(self.population_parameters,
                                                n_parameters_per_worker)
@@ -100,8 +100,8 @@ class ES():
                 self.population_rewards = np.empty(self.population_size)
                 for idx, parameter in enumerate(split_parameters[0]):
                     torch.nn.utils.vector_to_parameters(
-                        parameter, self.target.parameters())
-                    reward, _ = self.agent.forward(self.target)
+                        parameter.to(self.device), self.target.parameters())
+                    reward, _ = self.agent.rollout(self.target)
                     self.population_rewards[idx] = reward
 
                 for worker_idx in range(1, self.n_workers):
@@ -118,12 +118,14 @@ class ES():
                 index = 0
                 for parameter in self.policy.parameters():
                     size = np.prod(parameter.shape)
-                    parameter.grad = -grad[index:index+size].view(parameter.shape)
+                    parameter.grad = (-grad[index:index+size]
+                                      .view(parameter.shape)
+                                      .to(self.device))
                     # Limit gradient update to increase stability.
                     parameter.grad.data.clamp_(-1.0, 1.0)
                     index += size
                 self.optimizer.step()
-                self.episode_reward, _ = self.agent.forward(self.policy)
+                self.episode_reward, _ = self.agent.rollout(self.policy)
                 self.log()
                 self.step += 1
         for worker_idx in range(1, self.n_workers):
@@ -142,8 +144,8 @@ class ES():
                 parameters = torch.from_numpy(parameters).float()
                 for parameter in parameters:
                     torch.nn.utils.vector_to_parameters(
-                        parameter, self.target.parameters())
-                    reward, _ = self.agent.forward(self.target)
+                        parameter.to(self.device), self.target.parameters())
+                    reward, _ = self.agent.rollout(self.target)
                     rewards.append(reward)
                 self._comm.Send(np.array(rewards), dest=0)
             sys.exit(0)

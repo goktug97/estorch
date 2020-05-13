@@ -50,7 +50,7 @@ class Bipedal():
         self.env = gym.make('BipedalWalker-v3')
 
         # FIX
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cpu")
 
         # Behaviour characteristic is domain dependent function,
         # in BipedalWalker, I've decided to make it first
@@ -59,7 +59,7 @@ class Bipedal():
         # 39 actions so I think 32 is a safe number.
         self.n = 32
 
-    def forward(self, policy, render=False):
+    def rollout(self, policy, render=False):
         done = False
         observation = self.env.reset()
         step = 0
@@ -88,9 +88,9 @@ class Bipedal():
 class CartPole():
     def __init__(self):
         self.env = gym.make('CartPole-v1')
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cpu")
 
-    def forward(self, policy, render=False):
+    def rollout(self, policy, render=False):
         done = False
         observation = self.env.reset()
         total_reward = 0
@@ -105,9 +105,11 @@ class CartPole():
                     self.env.render()
                 total_reward += reward
         return total_reward, None
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cpu")
 # es = ES(Policy, Bipedal, torch.optim.Adam, population_size=256, device=device)
-es = ES(CartPolePolicy, CartPole, torch.optim.Adam, population_size=100,
-        device=device)
-es.train(n_steps=100, n_proc=2)
-es.agent.forward(es.policy, render=True)
+es = ES(CartPolePolicy, CartPole, torch.optim.Adam, population_size=100, device=device)
+# es.train(n_steps=20, hostfile="./hostfile")
+es.train(n_steps=100, n_proc=4, hwthread=True)
+es.agent.rollout(es.policy, render=True)
