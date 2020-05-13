@@ -136,7 +136,7 @@ class ES():
             while True:
                 rewards = []
                 parameters = np.empty((int(self.population_size/self.n_workers),
-                                       self.n_parameters))
+                                       self.n_parameters), dtype=np.float32)
                 self._comm.Recv(parameters, source=0, status=self.status)
                 tag = self.status.Get_tag()
                 if tag == Tag.STOP:
