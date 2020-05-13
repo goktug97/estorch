@@ -106,10 +106,7 @@ class CartPole():
                 total_reward += reward
         return total_reward, None
 
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = torch.device("cpu")
-# es = ES(Policy, Bipedal, torch.optim.Adam, population_size=256, device=device)
-es = ES(CartPolePolicy, CartPole, torch.optim.Adam, population_size=100, device=device)
-# es.train(n_steps=20, hostfile="./hostfile")
+es = ES(CartPolePolicy, CartPole, torch.optim.Adam, population_size=100)
 es.train(n_steps=100, n_proc=4, hwthread=True)
 es.agent.rollout(es.policy, render=True)
