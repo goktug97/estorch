@@ -1,5 +1,5 @@
 
-from estorch import ES, NS_ES
+from estorch import ES, NS_ES, NSR_ES, NSRA_ES
 import numpy as np
 import torch
 
@@ -77,6 +77,8 @@ class Bipedal():
                         .cpu()
                         .numpy())
                 observation, reward, done, info = self.env.step(action)
+                if render:
+                    self.env.render()
                 total_reward += reward
                 last_actions.append(action)
                 if step < self.n:
@@ -108,6 +110,7 @@ class CartPole():
 
 device = torch.device("cpu")
 # es = NS_ES(CartPolePolicy, CartPole, torch.optim.Adam, population_size=100)
-es = NS_ES(Policy, Bipedal, torch.optim.Adam, population_size=100)
-es.train(n_steps=10, n_proc=4, hwthread=True)
-es.agent.rollout(es.policy, render=True)
+es = NSRA_ES(Policy, Bipedal, torch.optim.Adam, population_size=100)
+es.train(n_steps=1, n_proc=4, hwthread=True)
+for policy, _ in es.meta_population:
+    es.agent.rollout(policy, render=True)
