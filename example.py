@@ -1,5 +1,5 @@
 
-from estorch import ES
+from estorch import ES, NS_ES
 import numpy as np
 import torch
 
@@ -107,6 +107,7 @@ class CartPole():
         return total_reward, None
 
 device = torch.device("cpu")
-es = ES(CartPolePolicy, CartPole, torch.optim.Adam, population_size=100)
-es.train(n_steps=100, n_proc=4, hwthread=True)
+# es = NS_ES(CartPolePolicy, CartPole, torch.optim.Adam, population_size=100)
+es = NS_ES(Policy, Bipedal, torch.optim.Adam, population_size=100)
+es.train(n_steps=10, n_proc=4, hwthread=True)
 es.agent.rollout(es.policy, render=True)
