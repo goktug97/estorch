@@ -10,12 +10,6 @@ from mpi4py import MPI
 import numpy as np
 import torch
 
-class Tag():
-    STOP = 1
-
-class Algorithm(Enum):
-    classic = 1
-    novelty = 2
 
 @lru_cache(maxsize=1)
 def center_function(population_size):
@@ -52,6 +46,16 @@ def fork(n_proc=1, hwthread=False, hostfile=None):
         subprocess.call(command.split(' '), env=env)
         return True
     return False
+
+
+class Tag():
+    STOP = 1
+
+
+class Algorithm(Enum):
+    classic = 1
+    novelty = 2
+
 
 class ES():
     _ALGORITHM_TYPE = Algorithm.classic
@@ -95,7 +99,7 @@ class ES():
 
     def _calculate_grad(self, epsilon):
         ranked_rewards = torch.from_numpy(
-            rank_transformation(self.population_returns)).unsqueeze(0).float()
+            rank_transformation(self.population_returns.squeeze())).unsqueeze(0).float()
         grad = (torch.mm(ranked_rewards, epsilon) /
                 (self.population_size * self.sigma)).squeeze()
         return grad
@@ -106,162 +110,45 @@ class ES():
             self.best_reward = self.episode_reward
             self.best_policy_dict = policy.state_dict()
 
-    def _master(self):
-        self.step = 0
-        with torch.no_grad():
-            while self.step < self.n_steps and not self._stop:
-                parameters = torch.nn.utils.parameters_to_vector(
-                    self.policy.parameters())
-                normal = torch.distributions.normal.Normal(0, self.sigma)
-                epsilon = normal.sample([self.population_size, parameters.shape[0]])
-                self.population_parameters = parameters.detach().cpu() + epsilon
-                n_parameters_per_worker = int(self.population_size/self.n_workers)
-                split_parameters = torch.split(self.population_parameters,
-                                               n_parameters_per_worker)
-                for i in range(1, self.n_workers):
-                    self._comm.Send(split_parameters[i].numpy(), dest=i)
+    def _sample_policy(self, policy):
+        parameters = torch.nn.utils.parameters_to_vector(policy.parameters())
+        normal = torch.distributions.normal.Normal(0, self.sigma)
+        epsilon = normal.sample([self.population_size, parameters.shape[0]])
+        population_parameters = parameters.detach().cpu() + epsilon
+        return population_parameters, epsilon
 
-                self.population_returns = np.empty(self.population_size)
-                for idx, parameter in enumerate(split_parameters[0]):
-                    torch.nn.utils.vector_to_parameters(
-                        parameter.to(self.device), self.target.parameters())
-                    reward, _ = self.agent.rollout(self.target)
-                    self.population_returns[idx] = reward
+    def _calculate_returns(self, parameters):
+        returns = []
+        for parameter in parameters:
+            torch.nn.utils.vector_to_parameters(
+                parameter.to(self.device), self.target.parameters())
+            reward, _ = self.agent.rollout(self.target)
+            returns.append(reward)
+        return np.array(returns, dtype=np.float32)[:, np.newaxis]
 
-                for worker_idx in range(1, self.n_workers):
-                    self._comm.Recv(self.population_returns[
-                        worker_idx*n_parameters_per_worker:
-                        worker_idx*n_parameters_per_worker+
-                        n_parameters_per_worker],
-                                    source=worker_idx)
+    def _get_policy(self):
+        return self.policy, self.optimizer
 
-                grad = self._calculate_grad(epsilon)
-                index = 0
-                for parameter in self.policy.parameters():
-                    size = np.prod(parameter.shape)
-                    parameter.grad = (-grad[index:index+size]
-                                      .view(parameter.shape)
-                                      .to(self.device))
-                    # Limit gradient update to increase stability.
-                    parameter.grad.data.clamp_(-1.0, 1.0)
-                    index += size
-                self.optimizer.step()
-                self._after_optimize(self.policy)
-                self.log()
-                self.step += 1
-        for worker_idx in range(1, self.n_workers):
-            self._comm.send(None, dest=worker_idx, tag=Tag.STOP)
-
-    def _slave(self):
-        with torch.no_grad():
-            while True:
-                returns = []
-                parameters = np.empty((int(self.population_size/self.n_workers),
-                                       self.n_parameters), dtype=np.float32)
-                self._comm.Recv(parameters, source=0, status=self.status)
-                tag = self.status.Get_tag()
-                if tag == Tag.STOP:
-                    break
-                parameters = torch.from_numpy(parameters).float()
-                for parameter in parameters:
-                    torch.nn.utils.vector_to_parameters(
-                        parameter.to(self.device), self.target.parameters())
-                    reward, _ = self.agent.rollout(self.target)
-                    returns.append(reward)
-                self._comm.Send(np.array(returns), dest=0)
-            sys.exit(0)
-
-    def train(self, n_steps, n_proc=1, hwthread=False, hostfile=None):
-        if self._trained:
-            error_message = "train function can not be called more than once."
-            error_message = f"\033[1m\x1b[31m{error_message}\x1b[0m\x1b[0m"
-            raise RuntimeError(error_message)
-        self._trained = True
-        self.n_steps = n_steps
-        if fork(n_proc, hwthread, hostfile): sys.exit(0)
-        self._master() if self.rank == 0 else self._slave()
-
-class NS_ES(ES):
-    _ALGORITHM_TYPE = Algorithm.novelty
-    def __init__(self, policy, agent, optimizer, population_size, sigma=0.01,
-                 meta_population_size=3, k=10, device=torch.device("cpu"),
-                 policy_kwargs={}, agent_kwargs={}, optimizer_kwargs={}):
-
-        super().__init__(policy, agent, optimizer, population_size, sigma,
-                         device, policy_kwargs, agent_kwargs, optimizer_kwargs)
-
-        self.meta_population_size = meta_population_size
-        self.k = k
-
-        if self.rank == 0:
-            self.archive = []
-            self.meta_population = []
-            for _ in range(self.meta_population_size):
-                p = policy(**policy_kwargs).to(self.device)
-                optim = optimizer(p.parameters(), **optimizer_kwargs)
-                self.meta_population.append((p, optim))
-                reward, bc = self.agent.rollout(p)
-                if bc is None:
-                    raise ValueError("Behaviour Charateristics is None")
-                self.archive.append(bc)
-
-    def _calculate_novelty(self, bc, archive):
-        kd = spatial.cKDTree(archive)
-        distances, idxs = kd.query(bc, k=self.k)
-        distances = distances[distances < float('inf')]
-        novelty = np.sum(distances) / np.linalg.norm(archive)
-        return novelty
-
-    def _calculate_grad(self, epsilon):
-        ranked_novelties = torch.from_numpy(
-            rank_transformation(
-                self.population_returns[:, 1])).unsqueeze(0).float()
-        grad = (torch.mm(ranked_novelties, epsilon) /
-                (self.population_size * self.sigma)).squeeze()
-        return grad
-
-    def _after_optimize(self, policy):
-        self.episode_reward, bc = self.agent.rollout(policy)
-        self.archive.append(bc)
-        if self.episode_reward > self.best_reward:
-            self.best_reward = self.episode_reward
-            self.best_policy_dict = policy.state_dict()
+    def _send_to_slaves(self, split_parameters):
+        for i in range(1, self.n_workers):
+            self._comm.Send(split_parameters[i].numpy(), dest=i)
 
     def _master(self):
         self.step = 0
         with torch.no_grad():
             while self.step < self.n_steps and not self._stop:
-                total_novelty = []
-                for policy, _ in self.meta_population:
-                    reward, bc = self.agent.rollout(policy)
-                    novelty = self._calculate_novelty(bc, self.archive)
-                    total_novelty.append(novelty)
-                total_novelty = np.array(total_novelty)
-                meta_population_probability = total_novelty / np.sum(total_novelty)
-                self.idx = np.random.choice(
-                    np.arange(len(self.meta_population), dtype=np.int),
-                    p=meta_population_probability)
-                policy, optimizer = self.meta_population[self.idx]
-
-                parameters = torch.nn.utils.parameters_to_vector(
-                    policy.parameters())
-                normal = torch.distributions.normal.Normal(0, self.sigma)
-                epsilon = normal.sample([self.population_size, parameters.shape[0]])
-                self.population_parameters = parameters.detach().cpu() + epsilon
+                policy, optimizer = self._get_policy()
+                self.population_parameters, epsilon = self._sample_policy(policy)
                 n_parameters_per_worker = int(self.population_size/self.n_workers)
                 split_parameters = torch.split(self.population_parameters,
                                                n_parameters_per_worker)
-                for i in range(1, self.n_workers):
-                    self._comm.Send(split_parameters[i].numpy(), dest=i)
-                self._comm.bcast(self.archive, root=0)
 
-                self.population_returns = np.empty((self.population_size, 2))
-                for idx, parameter in enumerate(split_parameters[0]):
-                    torch.nn.utils.vector_to_parameters(
-                        parameter.to(self.device), self.target.parameters())
-                    reward, bc = self.agent.rollout(self.target)
-                    novelty = self._calculate_novelty(bc, self.archive)
-                    self.population_returns[idx] = reward, novelty
+                self._send_to_slaves(split_parameters)
+
+                returns = self._calculate_returns(split_parameters[0])
+                self.population_returns = np.empty((
+                    self.population_size, returns.shape[1]), dtype=np.float32)
+                self.population_returns[:n_parameters_per_worker] = returns
 
                 for worker_idx in range(1, self.n_workers):
                     self._comm.Recv(self.population_returns[
@@ -287,27 +174,125 @@ class NS_ES(ES):
         for worker_idx in range(1, self.n_workers):
             self._comm.send(None, dest=worker_idx, tag=Tag.STOP)
 
+    def _recv_from_master(self):
+        parameters = np.empty((int(self.population_size/self.n_workers),
+                               self.n_parameters), dtype=np.float32)
+        self._comm.Recv(parameters, source=0, status=self.status)
+        tag = self.status.Get_tag()
+        if tag == Tag.STOP:
+            return
+        parameters = torch.from_numpy(parameters).float()
+        return parameters
+
     def _slave(self):
         with torch.no_grad():
             while True:
-                returns = []
-                parameters = np.empty((int(self.population_size/self.n_workers),
-                                       self.n_parameters), dtype=np.float32)
-                self._comm.Recv(parameters, source=0, status=self.status)
-                tag = self.status.Get_tag()
-                if tag == Tag.STOP:
+                parameters = self._recv_from_master()
+                if parameters is None:
                     break
-                archive = None
-                archive = self._comm.bcast(archive, root=0)
-                parameters = torch.from_numpy(parameters).float()
-                for parameter in parameters:
-                    torch.nn.utils.vector_to_parameters(
-                        parameter.to(self.device), self.target.parameters())
-                    reward, bc = self.agent.rollout(self.target)
-                    novelty = self._calculate_novelty(bc, archive)
-                    returns.append((reward, novelty))
-                self._comm.Send(np.array(returns), dest=0)
+                returns = self._calculate_returns(parameters)
+                self._comm.Send(returns, dest=0)
             sys.exit(0)
+
+    def train(self, n_steps, n_proc=1, hwthread=False, hostfile=None):
+        if self._trained:
+            error_message = "train function can not be called more than once."
+            error_message = f"\033[1m\x1b[31m{error_message}\x1b[0m\x1b[0m"
+            raise RuntimeError(error_message)
+        self._trained = True
+        self.n_steps = n_steps
+        if fork(n_proc, hwthread, hostfile): sys.exit(0)
+        self._master() if self.rank == 0 else self._slave()
+
+
+class NS_ES(ES):
+    _ALGORITHM_TYPE = Algorithm.novelty
+    def __init__(self, policy, agent, optimizer, population_size, sigma=0.01,
+                 meta_population_size=3, k=10, device=torch.device("cpu"),
+                 policy_kwargs={}, agent_kwargs={}, optimizer_kwargs={}):
+
+        super().__init__(policy, agent, optimizer, population_size, sigma,
+                         device, policy_kwargs, agent_kwargs, optimizer_kwargs)
+
+        self.meta_population_size = meta_population_size
+        self.k = k
+
+        if self.rank == 0:
+            self.archive = []
+            self.meta_population = []
+            for _ in range(self.meta_population_size):
+                p = policy(**policy_kwargs).to(self.device)
+                optim = optimizer(p.parameters(), **optimizer_kwargs)
+                self.meta_population.append((p, optim))
+                reward, bc = self.agent.rollout(p)
+                if bc is None:
+                    raise ValueError("Behaviour Charateristics is None")
+                self.archive.append(bc)
+        else:
+            self.archive = None
+
+    def _calculate_novelty(self, bc, archive):
+        kd = spatial.cKDTree(archive)
+        distances, idxs = kd.query(bc, k=self.k)
+        distances = distances[distances < float('inf')]
+        novelty = np.sum(distances) / np.linalg.norm(archive)
+        return novelty
+
+    def _calculate_grad(self, epsilon):
+        ranked_novelties = torch.from_numpy(
+            rank_transformation(
+                self.population_returns[:, 1])).unsqueeze(0).float()
+        grad = (torch.mm(ranked_novelties, epsilon) /
+                (self.population_size * self.sigma)).squeeze()
+        return grad
+
+    def _after_optimize(self, policy):
+        self.episode_reward, bc = self.agent.rollout(policy)
+        self.archive.append(bc)
+        if self.episode_reward > self.best_reward:
+            self.best_reward = self.episode_reward
+            self.best_policy_dict = policy.state_dict()
+
+    def _calculate_returns(self, parameters):
+        returns = []
+        for parameter in parameters:
+            torch.nn.utils.vector_to_parameters(
+                parameter.to(self.device), self.target.parameters())
+            reward, bc = self.agent.rollout(self.target)
+            novelty = self._calculate_novelty(bc, self.archive)
+            returns.append((reward, novelty))
+        return np.array(returns, dtype=np.float32)
+
+    def _get_policy(self):
+        total_novelty = []
+        for policy, _ in self.meta_population:
+            reward, bc = self.agent.rollout(policy)
+            novelty = self._calculate_novelty(bc, self.archive)
+            total_novelty.append(novelty)
+        total_novelty = np.array(total_novelty)
+        meta_population_probability = total_novelty / np.sum(total_novelty)
+        self.idx = np.random.choice(
+            np.arange(len(self.meta_population), dtype=np.int),
+            p=meta_population_probability)
+        policy, optimizer = self.meta_population[self.idx]
+        return policy, optimizer
+
+    def _send_to_slaves(self, split_parameters):
+        for i in range(1, self.n_workers):
+            self._comm.Send(split_parameters[i].numpy(), dest=i)
+        self._comm.bcast(self.archive, root=0)
+
+    def _recv_from_master(self):
+        parameters = np.empty((int(self.population_size/self.n_workers),
+                               self.n_parameters), dtype=np.float32)
+        self._comm.Recv(parameters, source=0, status=self.status)
+        tag = self.status.Get_tag()
+        if tag == Tag.STOP:
+            return
+        self.archive = self._comm.bcast(self.archive, root=0)
+        parameters = torch.from_numpy(parameters).float()
+        return parameters
+
 
 class NSR_ES(NS_ES):
     _ALGORITHM_TYPE = Algorithm.novelty
@@ -319,6 +304,7 @@ class NSR_ES(NS_ES):
         grad = (torch.mm((ranked_novelties+ranked_rewards)/2, epsilon) /
                 (self.population_size * self.sigma)).squeeze()
         return grad
+
 
 class NSRA_ES(NS_ES):
     _ALGORITHM_TYPE = Algorithm.novelty
