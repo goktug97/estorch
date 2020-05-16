@@ -3,6 +3,8 @@ Welcome to ESTorch's documentation!
 
 .. automodule:: estorch.estorch
                :members: rank_transformation
+.. autoclass:: estorch.VirtualBatchNorm
+               :members:
 .. autoclass:: estorch.ES
                :members:
 .. autoclass:: estorch.NS_ES
