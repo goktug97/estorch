@@ -37,7 +37,7 @@ class Policy(nn.Module):
         return x
 
 class Agent():
-    """The same preprocessing applied to the frames as described in the paper
+    """The same preprocessing is applied to the frames as described in the paper
     `Human-level control through deep reinforcement learning`."""
     def __init__(self, env_name, frame_skip=4, device=torch.device('cpu')):
         self.env = gym.make(env_name)
@@ -80,8 +80,8 @@ if __name__ == '__main__':
     frame_skip = 4
 
     # Each MPI proccess is an "independent" program. Reference batch calculations
-    # takes some time and should not be calculated more than once. So we will
-    # calculate it on the master processes and broadcast it to other processes.
+    # take some time and should not be calculated more than once. So we will
+    # calculate it on the master process and broadcast it to other processes.
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     reference_batch = []
