@@ -549,7 +549,7 @@ class NSR_ES(NS_ES):
 
 class NSRA_ES(NS_ES):
     """Quality Diversity Evolution Strategy Algorithm. It optimizes
-    given policy for the max avarage of novelty and reward return. For
+    given policy for the max weighted avarage of novelty and reward return. For
     example usage refer to
     https://github.com/goktug97/estorch/blob/master/examples/nsra_es.py
     This class is inherited from the :class:`NS_ES` which inherits
