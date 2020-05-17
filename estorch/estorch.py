@@ -657,3 +657,4 @@ class NSRA_ES(NS_ES):
             self.t += 1
             if self.t >= self.weight_t:
                 self.weight = max(self.weight - self.weight_delta, self.min_weight)
+                self.t = 0
