@@ -50,8 +50,9 @@ class Agent():
         observation = self.env.reset()
         self.frame_buffer.append(observation)
         y_channel = observation @ np.array([0.299, 0.587, 0.114])
-        y_channel = resize(y_channel, (1, 84, 84))
-        for _ in range(self.frame_skip): self.frames.append(y_channel)
+        y_channel = resize(y_channel, (84, 84, 1))
+        for _ in range(self.frame_skip):
+            self.frames.append(y_channel.transpose(2, 0, 1))
         done = False
         total_reward = 0
         with torch.no_grad():
@@ -66,8 +67,8 @@ class Agent():
                     self.frame_buffer.append(observation)
                     observation = np.max((np.stack(self.frame_buffer)), axis=0)
                     y_channel = observation @ np.array([0.299, 0.587, 0.114])
-                    y_channel = resize(y_channel, (1, 84, 84))
-                    self.frames.append(y_channel)
+                    y_channel = resize(y_channel, (84, 84, 1))
+                    self.frames.append(y_channel.transpose(2, 0, 1))
                     if render:
                         self.env.render()
         return total_reward
@@ -95,8 +96,9 @@ if __name__ == '__main__':
             frame_buffer = collections.deque(maxlen=2)
             frame_buffer.append(observation)
             y_channel = observation @ np.array([0.299, 0.587, 0.114])
-            y_channel = resize(y_channel, (1, 84, 84))
-            for _ in range(frame_skip): frames.append(y_channel)
+            y_channel = resize(y_channel, (84, 84, 1))
+            for _ in range(frame_skip):
+                frames.append(y_channel.transpose(2, 0, 1))
             done = False
             total_reward = 0
             n_actions = env.action_space.n
@@ -111,8 +113,8 @@ if __name__ == '__main__':
                     frame_buffer.append(observation)
                     observation = np.max((np.stack(frame_buffer)), axis=0)
                     y_channel = observation @ np.array([0.299, 0.587, 0.114])
-                    y_channel = resize(y_channel, (1, 84, 84))
-                    frames.append(y_channel)
+                    y_channel = resize(y_channel, (84, 84, 1))
+                    frames.append(y_channel.transpose(2, 0, 1))
                     total_reward += reward
         reference_batch = random.sample(reference_batch, 128)
         reference_batch = torch.cat(reference_batch)
