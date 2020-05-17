@@ -76,6 +76,7 @@ if __name__ == '__main__':
     # Atari games take SO MUCH TIME to finish. SO MUCH.
 
     device = torch.device('cpu')
+    n_proc = 1
     env_name='Breakout-v0'
     frame_skip = 4
 
@@ -86,7 +87,7 @@ if __name__ == '__main__':
     rank = comm.Get_rank()
     reference_batch = []
     n_actions = 0
-    if rank == 0 and os.getenv('MPI_PARENT') is not None:
+    if (rank == 0 and os.getenv('MPI_PARENT') is not None) or n_proc == 1:
         env = gym.make(env_name)
         for _ in range(5):
             observation = env.reset()
@@ -127,7 +128,7 @@ if __name__ == '__main__':
             agent_kwargs={'env_name': env_name, 'frame_skip': frame_skip,
                           'device': device},
             optimizer_kwargs={'lr': 0.01})
-    es.train(n_steps=100, n_proc=2)
+    es.train(n_steps=100, n_proc=n_proc)
 
     # Latest Policy
     policy = Policy(n_input, n_output).to(device)
