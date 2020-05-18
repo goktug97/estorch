@@ -51,11 +51,11 @@ if __name__ == '__main__':
     es.train(n_steps=100, n_proc=2)
 
     # Latest Policy
-    policy = Policy(n_input, n_output).to(device)
-    reward = agent.rollout(policy, render=True)
+    reward = agent.rollout(es.policy, render=True)
     print(f'Latest Policy Reward: {reward}')
 
     # Policy with the highest reward
+    policy = Policy(n_input, n_output).to(device)
     policy.load_state_dict(es.best_policy_dict)
     reward = agent.rollout(policy, render=True)
     print(f'Best Policy Reward: {reward}')
