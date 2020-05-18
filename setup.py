@@ -8,7 +8,7 @@ with open(os.path.join(directory, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
 
 setup(name='estorch',
-      version='1.0.2',
+      version='1.0.3',
       description='Evolution Strategy Library',
       author='Göktuğ Karakaşlı',
       author_email='karakasligk@gmail.com',
@@ -16,8 +16,6 @@ setup(name='estorch',
       long_description=long_description,
       long_description_content_type='text/markdown',
       url='https://github.com/goktug97/estorch',
-      download_url=(
-          'https://github.com/goktug97/estorch/archive/v1.0.0.tar.gz'),
       packages = ['estorch'],
       classifiers=[
           "Programming Language :: Python :: 3",
