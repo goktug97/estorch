@@ -4,13 +4,10 @@ from estorch import ES, rank_transformation
 
 from cartpole_es import Policy, Agent
 
-# NOTE:
-# Mirror sampling is a good technique so I've decided to add this directly to the
-# library but I am keeping this as an example.
 
 class SymmetricES(ES):
-    """Custom Evolution Strategy algorithm that samples parameters symmetrically
-    similar to the parameter exploring policy gradients algorithm."""
+    """Custom Evolution Strategy algorithm that samples parameters symmetrically and
+    updates parameters similar to the parameter exploring policy gradients algorithm."""
 
     def _sample_policy(self, policy):
         parameters = torch.nn.utils.parameters_to_vector(policy.parameters())

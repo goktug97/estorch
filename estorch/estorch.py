@@ -173,10 +173,8 @@ class ES():
     def _calculate_grad(self, epsilon):
         ranked_rewards = torch.from_numpy(
             rank_transformation(self.population_returns.squeeze())).unsqueeze(0).float()
-        batch = int(self.population_size/2)
-        grad = (torch.mm(
-            (ranked_rewards[0, :batch]-ranked_rewards[0, batch:]).unsqueeze(0),
-            epsilon) / ((self.population_size/2) * self.sigma)).squeeze()
+        grad = (torch.mm(ranked_rewards, epsilon) /
+                (self.population_size * self.sigma)).squeeze()
         return grad
 
     def _after_optimize(self, policy):
@@ -191,7 +189,7 @@ class ES():
         epsilon = normal.sample([int(self.population_size/2), parameters.shape[0]])
         parameters = parameters.detach().cpu()
         population_parameters = torch.cat((parameters + epsilon, parameters - epsilon))
-        return population_parameters, epsilon
+        return population_parameters, torch.cat((epsilon, -epsilon))
 
     def _calculate_returns(self, parameters):
         returns = []
