@@ -50,8 +50,9 @@ class VirtualBatchNorm(nn.Module):
         if self.mean is None and self.var is None:
             self.mean = torch.mean(x, dim=0, keepdim=True)
             self.var = torch.var(x, dim=0, keepdim=True)
-            return self.normalize(x)
+            out = self.normalize(x)
         else:
-            return self.normalize(x)
+            out = self.normalize(x)
             self.mean = None
             self.var = None
+        return out
