@@ -1,3 +1,4 @@
+import copy
 import os
 import sys
 import subprocess
@@ -181,7 +182,7 @@ class ES():
         self.episode_reward = self.agent.rollout(policy)
         if self.episode_reward > self.best_reward:
             self.best_reward = self.episode_reward
-            self.best_policy_dict = policy.state_dict()
+            self.best_policy_dict = copy.deepcopy(policy.state_dict())
 
     def _sample_policy(self, policy):
         parameters = torch.nn.utils.parameters_to_vector(policy.parameters())
@@ -428,7 +429,7 @@ class NS_ES(ES):
         self._archive.append(bc)
         if self.episode_reward > self.best_reward:
             self.best_reward = self.episode_reward
-            self.best_policy_dict = policy.state_dict()
+            self.best_policy_dict = copy.deepcopy(policy.state_dict())
 
     def _calculate_returns(self, parameters):
         returns = []
@@ -652,7 +653,7 @@ class NSRA_ES(NS_ES):
         if self.episode_reward > self.best_reward:
             self.best_reward = self.episode_reward
             self.weight = min(self.weight + self.weight_delta, 1.0)
-            self.best_policy_dict = policy.state_dict()
+            self.best_policy_dict = copy.deepcopy(policy.state_dict())
             self.t = 0
         else:
             self.t += 1

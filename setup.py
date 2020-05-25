@@ -8,7 +8,7 @@ with open(os.path.join(directory, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
 
 setup(name='estorch',
-      version='1.0.5',
+      version='1.0.6',
       description='Evolution Strategy Library',
       author='Göktuğ Karakaşlı',
       author_email='karakasligk@gmail.com',
