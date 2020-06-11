@@ -1,7 +1,7 @@
 Evolution Strategy Library
 =======================================================
 
-ESTorch is an Evolution Strategy Library build around PyTorch.
+ESTorch is an Evolution Strategy Library built around PyTorch.
 
 ## Installation
 
